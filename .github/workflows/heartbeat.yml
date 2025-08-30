@@ -1,0 +1,28 @@
+name: Heartbeat Test (checks write permissions)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  heartbeat:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (with token)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Create heartbeat file
+        run: |
+          mkdir -p .github
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > .github/heartbeat.txt
+          echo "heartbeat from workflow" >> .github/heartbeat.txt
+          git add .github/heartbeat.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Add heartbeat (Action write test)" || echo "nothing to commit"
+          git push origin HEAD:${{ github.event.repository.default_branch }} || (echo "Push failed")
