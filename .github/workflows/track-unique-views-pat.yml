@@ -1,82 +1,98 @@
-name: Track Daily Unique Views (PAT push)
+name: Track Daily Unique Views
 
 on:
+  schedule:
+    - cron: '30 18 * * *'   # 18:30 UTC = 00:00 IST
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   update-uniques:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout (with token for push)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: true
 
       - name: Install jq
         run: |
           sudo apt-get update -y
           sudo apt-get install -y jq
 
-      - name: Fetch views (uses GITHUB_TOKEN for API read)
+      - name: Fetch views from GitHub Traffic API
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
         run: |
-          REPO="${{ github.repository }}"
-          curl -s -H "Authorization: token $GITHUB_TOKEN" \
-            "https://api.github.com/repos/$REPO/traffic/views" -o /tmp/views.json || true
+          echo "Fetching traffic/views for $REPO"
+          curl -s -H "Authorization: token ${GITHUB_TOKEN}" "https://api.github.com/repos/${REPO}/traffic/views" -o /tmp/views.json || true
+          if [ -s /tmp/views.json ]; then
+            echo "/tmp/views.json saved (size=$(stat -c%s /tmp/views.json) bytes)"
+            jq -r '. | "count:\(.count) uniques:\(.uniques) days:\(.views|length)"' /tmp/views.json || true
+          else
+            echo "No views JSON returned yet (maybe no traffic)."
+          fi
 
-      - name: Update traffic.json
+      - name: Ensure .github/traffic.json exists
         run: |
           mkdir -p .github
           if [ ! -f .github/traffic.json ]; then
-            cat > .github/traffic.json <<'JSON'
-{
-  "total_daily_uniques_sum": 0,
-  "last_processed": "1970-01-01T00:00:00Z"
-}
-JSON
+            printf '%s\n' '{"total_daily_uniques_sum": 0, "last_processed":"1970-01-01T00:00:00Z"}' > .github/traffic.json
+            echo "Created .github/traffic.json"
+          else
+            echo ".github/traffic.json already present"
           fi
+          cat .github/traffic.json
 
+      - name: Compute new daily uniques and update file
+        run: |
           LAST=$(jq -r '.last_processed' .github/traffic.json)
+          echo "Last processed: $LAST"
 
-          if [ ! -s /tmp/views.json ] || ! jq -e '.views' /tmp/views.json >/dev/null 2>&1; then
-            echo "No views yet"
+          if [ ! -s /tmp/views.json ]; then
+            echo "No views data available; exiting without update."
             exit 0
           fi
 
-          VIEWS_JSON=$(cat /tmp/views.json)
-          new_uniques=$(jq --arg last "$LAST" '[.views[] | select(.timestamp > $last) | .uniques] | add // 0' <<<"$VIEWS_JSON")
-          newest_ts=$(jq -r '[.views[] | .timestamp] | max // empty' <<<"$VIEWS_JSON")
+          if ! jq -e '.views' /tmp/views.json >/dev/null 2>&1; then
+            echo "API response missing 'views' array. Contents:"
+            cat /tmp/views.json
+            exit 0
+          fi
 
+          # sum uniques for days after LAST
+          new_uniques=$(jq --arg last "$LAST" '[.views[] | select(.timestamp > $last) | .uniques] | add // 0' /tmp/views.json)
+          new_uniques=${new_uniques:-0}
+          echo "New uniques to add: $new_uniques"
+
+          newest_ts=$(jq -r '[.views[] | .timestamp] | max // empty' /tmp/views.json)
           if [ -z "$newest_ts" ]; then
             NEW_LAST="$LAST"
           else
             NEW_LAST="$newest_ts"
           fi
+          echo "New last_processed: $NEW_LAST"
 
-          tmp=$(mktemp)
+          tmpfile=$(mktemp)
           jq --argjson nu "$new_uniques" --arg newlast "$NEW_LAST" \
             '.total_daily_uniques_sum += ($nu // 0) | .last_processed = $newlast' \
-            .github/traffic.json > "$tmp" && mv "$tmp" .github/traffic.json
+            .github/traffic.json > "$tmpfile" && mv "$tmpfile" .github/traffic.json
 
+          echo "Updated .github/traffic.json:"
           cat .github/traffic.json
 
-      - name: Push using PAT
-        env:
-          GH_PUSH_TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
+      - name: Commit and push changes (if any)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .github/traffic.json
-
           if git diff --cached --quiet; then
-            echo "No changes"
-            exit 0
+            echo "No changes to commit."
+          else
+            git commit -m "Update daily unique totals"
+            git push
           fi
-
-          git commit -m "Update daily unique totals"
-          REPO_URL="https://x-access-token:${GH_PUSH_TOKEN}@github.com/${{ github.repository }}.git"
-          git push "$REPO_URL" HEAD:${{ github.event.repository.default_branch }}
