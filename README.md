@@ -1,5 +1,9 @@
 ## Hi there 👋
 
+
+![Daily Unique Views](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Khizarhayath/Khizarhayath/main/.github/traffic.json&label=DAILY%20UNIQUE%20VIEWS&query=$.total_daily_uniques_sum&style=for-the-badge&logo=github)
+
+
 <!--
 **Khizarhayath/Khizarhayath** is a ✨ _special_ ✨ repository because its `README.md` (this file) appears on your GitHub profile.
 
